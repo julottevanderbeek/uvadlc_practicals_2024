@@ -28,6 +28,7 @@ from copy import deepcopy
 from tqdm.auto import tqdm
 from mlp_pytorch import MLP
 import cifar10_utils
+import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
@@ -55,7 +56,11 @@ def accuracy(predictions, targets):
     #######################
     # PUT YOUR CODE HERE  #
     #######################
-
+    
+    predicted_labels = predictions.argmax(dim=1)
+    correct = (predicted_labels == targets).float()
+    accuracy = correct.mean()
+    
     #######################
     # END OF YOUR CODE    #
     #######################
@@ -84,6 +89,21 @@ def evaluate_model(model, data_loader):
     # PUT YOUR CODE HERE  #
     #######################
 
+    model.eval()
+    accuracy_total = 0
+    samples_total = 0 
+    
+    with torch.no_grad():
+      for batch in data_loader:
+        inputs, labels = batch
+        inputs, labels = inputs.to(model.device), labels.to(model.device)
+        inputs = inputs.view(inputs.size(0), -1)
+        outputs = model(inputs)
+        accuracy_batch = accuracy(outputs, labels)
+        accuracy_total += accuracy_batch * inputs.size(0)
+        samples_total += inputs.size(0)
+      avg_accuracy = accuracy_total / samples_total
+      
     #######################
     # END OF YOUR CODE    #
     #######################
@@ -145,16 +165,92 @@ def train(hidden_dims, lr, use_batch_norm, batch_size, epochs, seed, data_dir):
     # PUT YOUR CODE HERE  #
     #######################
 
+    train_loader = cifar10_loader['train']
+    val_loader = cifar10_loader['validation']
+    test_loader = cifar10_loader['test']
+    
     # TODO: Initialize model and loss module
-    model = ...
-    loss_module = ...
+    n_inputs = 3*32*32
+    model = MLP(n_inputs, hidden_dims, n_classes=10, use_batch_norm=use_batch_norm).to(device)
+    loss_module = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=lr)
+    
     # TODO: Training loop including validation
-    # TODO: Do optimization with the simple SGD optimizer
-    val_accuracies = ...
+    val_accuracies = []
+    train_losses = []
+    best_val_accuracy = 0.0
+    best_model = None
+    
+    for epoch in range(epochs):
+      epoch_losses = []
+      model.train()
+      
+      # Training
+      for inputs, targets in train_loader:
+        inputs, targets = inputs.to(device), targets.to(device)
+        inputs = inputs.view(inputs.size(0), -1)
+        
+        # Forward pass
+        predictions = model(inputs)
+        loss = loss_module(predictions, targets)
+        epoch_losses.append(loss.item())
+        
+        # TODO: Do optimization with the simple SGD optimizer
+        # Backward pass
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+      
+      train_losses.append(np.mean(epoch_losses))
+      val_accuracy = evaluate_model(model, val_loader)
+      val_accuracies.append(val_accuracy)
+      
+      # Save best model
+      if val_accuracy > best_val_accuracy:
+        best_val_accuracy = val_accuracy
+        best_model = deepcopy(model)
+        
+      print(f"Epoch {epoch + 1}/{epochs}, Loss: {train_losses[-1]:.4f}, Validation Accuracy: {val_accuracy:.4f}")
+      
     # TODO: Test best model
-    test_accuracy = ...
+    test_accuracy = evaluate_model(best_model, test_loader)
+    print(f"Test Accuracy of best model: {test_accuracy:.4f}")
+    
     # TODO: Add any information you might want to save for plotting
-    logging_dict = ...
+    logging_dict = {
+      'train_losses': train_losses,
+      'val_accuracies': val_accuracies,
+      'best_val_accuracy': best_val_accuracy,
+      'test_accuracy': test_accuracy
+    }
+    
+    # Convert tensors to CPU if training on Snellius for batchnorm 
+    # train_losses_cpu = [loss.cpu().item() if isinstance(loss, torch.Tensor) else loss for loss in train_losses]
+    # val_accuracies_cpu = [acc.cpu().item() if isinstance(acc, torch.Tensor) else acc for acc in val_accuracies]
+
+    # Plot loss and accuracy
+    plt.figure(figsize=(14, 5))
+
+    plt.subplot(1, 2, 1)
+    #plt.plot(train_losses_cpu, label='Training Loss')
+    plt.plot(logging_dict['train_losses'], label='Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training Loss')
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(logging_dict['val_accuracies'], label='Validation Accuracy', color='orange')
+    #plt.plot(val_accuracies_cpu, label='Validation Accuracy', color='orange')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.title('Validation Accuracy')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig("training_curves_pytorch.png")
+    plt.show()
+    
     #######################
     # END OF YOUR CODE    #
     #######################

@@ -59,7 +59,27 @@ class MLP(nn.Module):
         #######################
         # PUT YOUR CODE HERE  #
         #######################
-        pass
+        super(MLP, self).__init__()
+        self.layers = nn.ModuleList()
+        in_features = n_inputs
+        
+        # Add hidden layers
+        for i, hidden_units in enumerate(n_hidden):
+          self.layers.append(nn.Linear(in_features, hidden_units))
+          nn.init.kaiming_normal_(self.layers[-1].weight, nonlinearity='relu')
+          
+          # Batch-Normalization if use_batch_norm is True
+          if use_batch_norm:
+            self.layers.append(nn.BatchNorm1d(hidden_units))
+            
+          # Add ELU layer
+          self.layers.append(nn.ELU())
+          in_features = hidden_units
+        
+        # Add final output layer
+        self.layers.append(nn.Linear(in_features, n_classes))
+        nn.init.kaiming_normal_(self.layers[-1].weight, nonlinearity='relu')
+          
         #######################
         # END OF YOUR CODE    #
         #######################
@@ -82,6 +102,10 @@ class MLP(nn.Module):
         # PUT YOUR CODE HERE  #
         #######################
 
+        out = x 
+        for layer in self.layers:
+          out = layer(out)
+          
         #######################
         # END OF YOUR CODE    #
         #######################

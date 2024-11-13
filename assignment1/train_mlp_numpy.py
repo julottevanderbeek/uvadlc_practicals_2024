@@ -29,6 +29,7 @@ from copy import deepcopy
 from mlp_numpy import MLP
 from modules import CrossEntropyModule
 import cifar10_utils
+import matplotlib.pyplot as plt
 
 import torch
 
@@ -53,7 +54,10 @@ def accuracy(predictions, targets):
     #######################
     # PUT YOUR CODE HERE  #
     #######################
-
+    
+    predicted_labels = np.argmax(predictions, axis=1)
+    accuracy = np.mean(predicted_labels == targets)
+    
     #######################
     # END OF YOUR CODE    #
     #######################
@@ -81,7 +85,18 @@ def evaluate_model(model, data_loader):
     #######################
     # PUT YOUR CODE HERE  #
     #######################
-
+    
+    accuracy_total = 0 
+    samples_total = 0
+    
+    for batch in data_loader:
+      inputs, labels = batch
+      outputs = model.forward(inputs.reshape(inputs.shape[0], -1))
+      accuracy_batch = accuracy(outputs, labels)
+      accuracy_total += accuracy_batch * inputs.shape[0]
+      samples_total += inputs.shape[0]
+    avg_accuracy = accuracy_total / samples_total
+    
     #######################
     # END OF YOUR CODE    #
     #######################
@@ -134,15 +149,89 @@ def train(hidden_dims, lr, batch_size, epochs, seed, data_dir):
     # PUT YOUR CODE HERE  #
     #######################
 
+    train_loader = cifar10_loader['train']
+    val_loader = cifar10_loader['validation']
+    test_loader = cifar10_loader['test']
+    
     # TODO: Initialize model and loss module
-    model = ...
-    loss_module = ...
+    n_inputs = 3*32*32
+    model = MLP(n_inputs, hidden_dims, n_classes=10)
+    loss_module = CrossEntropyModule()
+    
     # TODO: Training loop including validation
-    val_accuracies = ...
+    val_accuracies = []
+    train_losses = []
+    best_val_accuracy = 0.0
+    best_model = None
+    
+    for epoch in range(epochs):
+      epoch_losses = []
+      
+      # Training
+      for batch in train_loader:
+        inputs, targets = batch
+        inputs = inputs.reshape(inputs.shape[0], -1)
+        
+        # Forward pass
+        predictions = model.forward(inputs)
+        loss = loss_module.forward(predictions, targets)
+        
+        # Backward pass
+        gradient = loss_module.backward(predictions, targets)
+        model.backward(gradient)
+        
+        # Parameter update
+        for layer in model.layers:
+          if hasattr(layer, 'params'):
+            layer.params["weight"] -= lr * layer.grads["weight"]
+            layer.params["bias"] -= lr * layer.grads["bias"]
+        
+        epoch_losses.append(loss)
+      
+      train_losses.append(np.mean(epoch_losses))
+      val_accuracy = evaluate_model(model, val_loader)  
+      val_accuracies.append(val_accuracy)
+      
+      # Save best model
+      if val_accuracy > best_val_accuracy:
+        best_val_accuracy = val_accuracy
+        best_model = deepcopy(model)
+      
+      print(f"Epoch {epoch+1}/{epochs}, Loss: {train_losses[-1]:.4f}, Validation Accuracy: {val_accuracy:.4f}")  
+      
     # TODO: Test best model
-    test_accuracy = ...
+    test_accuracy = evaluate_model(best_model, test_loader)
+    print(f"Test Accuracy of best model: {test_accuracy:.4f}")
+    
     # TODO: Add any information you might want to save for plotting
-    logging_dict = ...
+    logging_dict = {
+        'train_losses': train_losses,
+        'val_accuracies': val_accuracies,
+        'best_val_accuracy': best_val_accuracy,
+        'test_accuracy': test_accuracy
+        }
+    
+    # Plot loss and accuracy
+    plt.figure(figsize=(14, 5))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(logging_dict['train_losses'], label='Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training Loss')
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(logging_dict['val_accuracies'], label='Validation Accuracy', color='orange')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.title('Validation Accuracy')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig("training_curves_numpy.png")
+    plt.show()
+    
     #######################
     # END OF YOUR CODE    #
     #######################
