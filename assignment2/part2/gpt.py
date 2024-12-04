@@ -41,7 +41,11 @@ class RMSNorm(nn.Module):
 
     def forward(self, x):
         # Compute the norm of the input tensor and divide by the norm
+        norm = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
+        
         # Scale the normalized tensor by the learned weight parameter
+        output = (x / norm) * self.weight
+        
         return output
 
 class CausalSelfAttention(nn.Module):
@@ -109,19 +113,20 @@ class CausalSelfAttention(nn.Module):
             Tuple[torch.Tensor, torch.Tensor]: Tuple containing the modified query and key tensors.
         """
         # Generate RoPE embeddings dynamically based on T
-        seq_pos = ...  # Shape: (T)
-        freqs = ...    # Shape: (T, dim // 2)
-        pos_emb = ...  # Shape: (1, 1, T, dim)
+        seq_pos = torch.arange(0, T, dtype=torch.float32, device=xq.device) # Shape: (T)   
+        freqs = (seq_pos[:, None] * self.inv_freq.to(xq.device)[None, :]).to(xq.dtype) # Shape: (T, dim // 2)
+        pos_emb = freqs.unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, T, dim)
         
         # Split pos into sin and cos components, repeating each to match xq and xk dimensions
-        pos_sin = ...
-        pos_cos = ...
+        pos_sin = pos_emb.sin()
+        pos_cos = pos_emb.cos()
         
         # Apply RoPE transformation: pair and rotate dimensions
-        # Rotate query and key tensors
-        xq_rot = ...
-        xk_rot = ...
-        raise NotImplementedError
+        # Rotate query and key tensors     
+        xq_rot = torch.cat([xq[..., 0::2] * pos_cos - xq[..., 1::2] * pos_sin,
+                        xq[..., 0::2] * pos_sin + xq[..., 1::2] * pos_cos], dim=-1)
+        xk_rot = torch.cat([xk[..., 0::2] * pos_cos - xk[..., 1::2] * pos_sin,
+                        xk[..., 0::2] * pos_sin + xk[..., 1::2] * pos_cos], dim=-1)
         
         return xq_rot, xk_rot
         
@@ -130,11 +135,12 @@ class CausalSelfAttention(nn.Module):
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         # Split output of attention-head in query, key and value
-        q, k ,v  = ...
+        qkv = self.c_attn(x)
+        q, k ,v  = torch.chunk(qkv, 3, dim=-1)
 
-        q = ...
-        k = ...
-        v = ...
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
         if not self.config.abs_emb:
             q, k = self.apply_rotary_emb(q, k, T)
@@ -144,13 +150,16 @@ class CausalSelfAttention(nn.Module):
         # Mask the calculated attention weights with the mask parameter.
 
         if self.use_flash_attn:
-            y = ...
+            y = F.scaled_dot_product_attention(q, k, v)
         else:
             # Compute attention scores
-            att = ... 
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(C // self.n_head))
             # Apply causal mask
+            att = att.masked_fill(self.mask[:, :, :T, :T] == 0, float('-inf'))
+            att = F.softmax(att, dim=-1) 
+            att = self.attn_dropout(att)
             # Apply attention to the values
-            y = ... # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
         # output projection
@@ -183,10 +192,20 @@ class TransformerDecoderBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
         # Initialize the layers
-        raise NotImplementedError
+        self.layer_norm_1 = RMSNorm(config.n_embd)
+        self.self_attention = CausalSelfAttention(config)
+        self.layer_norm_2 = RMSNorm(config.n_embd)
+        self.mlpf = nn.Sequential(
+            nn.Linear(config.n_embd, 4 * config.n_embd),
+            BERTGELU(),
+            nn.Linear(4 * config.n_embd, config.n_embd),
+            nn.Dropout(config.resid_pdrop)
+        )
+        
     def forward(self, x):
         # Forward pass through the Decoder Layer
-        out = ...
+        out = x + self.self_attention(self.layer_norm_1(x))
+        out = out + self.mlpf(self.layer_norm_2(out))
         return out
 
 
@@ -390,8 +409,7 @@ class GPT(nn.Module):
 
         # Forward token and position embedders
         # token embeddings of shape (b, t, n_embd)
-        # apply dropout to the tokens
-        tok_emb = ...
+        tok_emb = self.transformer.w_token_emb(idx)
 
         if self.config.abs_emb:
             pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
@@ -399,10 +417,17 @@ class GPT(nn.Module):
             x = tok_emb + pos_emb
         else:
             x = tok_emb
+        
+        # apply dropout to the tokens  
+        x = self.transformer.drop(x)
 
         # Iterate through the transformer blocks
+        for block in self.transformer.h:
+            x = block(x)
+        
         # Apply final layer normalization and linear layer to produce logits
-        logits = ...
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x)
 
         return logits
 
@@ -445,24 +470,30 @@ class GPT(nn.Module):
             idx_cond = idx if idx.size(1) <= self.block_size else idx[:, -self.block_size:]
 
             # forward the model to get the logits for the index in the sequence
+            logits = self.forward(idx_cond)
+            
             # pluck the logits at the final step and scale by desired temperature
+            logits = logits[:, -1, :] / temperature
 
             if not do_sample:
                 # take the most likely token
-                idx_next = ...
+                idx_next = torch.argmax(logits, dim=-1, keepdim=True)
             
             else:
                 # apply softmax to convert logits to (normalized) probabilities
+                probabilities = torch.softmax(logits, dim=-1)
 
                 # optionally only consider top-k logits for sampling. 
                 if top_k is not None:
                     pass
-
+                
                 # optionally apply top-p sampling
                 if top_p is not None:
                     pass
+                
+                idx_next = torch.multinomial(probabilities, num_samples=1)
             
             # append sampled index to the running sequence and continue
-            idx = ...
+            idx = torch.cat([idx, idx_next], dim=-1)
 
         return idx
