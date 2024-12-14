@@ -35,8 +35,8 @@ def sample_reparameterize(mean, std):
     #######################
     # PUT YOUR CODE HERE  #
     #######################
-    z = None
-    raise NotImplementedError
+    sample_noise = torch.randn_like(std)
+    z = mean + (std * sample_noise)
     #######################
     # END OF YOUR CODE    #
     #######################
@@ -58,8 +58,7 @@ def KLD(mean, log_std):
     #######################
     # PUT YOUR CODE HERE  #
     #######################
-    KLD = None
-    raise NotImplementedError
+    KLD = 0.5 * torch.sum(torch.exp(2 * log_std) + mean**2 - 1 - (2 * log_std), dim=-1)
     #######################
     # END OF YOUR CODE    #
     #######################
@@ -78,8 +77,9 @@ def elbo_to_bpd(elbo, img_shape):
     #######################
     # PUT YOUR CODE HERE  #
     #######################
-    bpd = None
-    raise NotImplementedError
+    batch, channels, height, width = img_shape
+    d = height * width * channels
+    bpd = elbo * torch.log2(torch.exp(torch.tensor(1.0))) * (d **-1)
     #######################
     # END OF YOUR CODE    #
     #######################
@@ -110,8 +110,23 @@ def visualize_manifold(decoder, grid_size=20):
     #######################
     # PUT YOUR CODE HERE  #
     #######################
-    img_grid = None
-    raise NotImplementedError
+    
+    percentiles = torch.linspace(0.5 / grid_size, (grid_size - 0.5) / grid_size, grid_size)
+    z_values = torch.distributions.Normal(0, 1).icdf(percentiles)
+    z1, z2 = torch.meshgrid(z_values, z_values, indexing='ij')
+    
+    z = torch.stack([z1.flatten(), z2.flatten()], dim=-1).to(decoder.device)  
+
+    logits = decoder(z) 
+    probs = torch.nn.functional.softmax(logits, dim=1)
+    probs = torch.permute(probs, (0, 2, 3, 1))
+    probs = torch.flatten(probs, end_dim=2)
+
+    x_samples = torch.multinomial(probs, 1).reshape(-1, 28, 28, 1)
+    x_samples = torch.permute(x_samples, (0, 3, 1, 2))
+
+    img_grid = make_grid(x_samples, nrow=grid_size).float()
+
     #######################
     # END OF YOUR CODE    #
     #######################
